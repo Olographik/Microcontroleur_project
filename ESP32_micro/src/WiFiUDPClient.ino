@@ -9,8 +9,8 @@ const int end_stop = 21;//pin end stop
 const int Launch_coffe_btn = 5;// btn pour lancer la machine a cafe
 
 // WiFi network name and password:
-const char * networkName = "Olographik-Rasp";
-const char * networkPswd = "Olographikpasword";
+const char * networkName = "MASTER";
+const char * networkPswd = "JeuDeRole";
 
 //char for code
 const char* SENDINGCODE = "Qui est tu ?";
@@ -39,13 +39,13 @@ WiFiUDP udp;
 
 // Common data
 int prct_value_lamp = 0;
-int value_of_coffe = 100;
+int value_of_coffe = 0;
 int volume_of_coffe = 0;
 bool value_lamp_changed=false, Coffe_start = false, volume_of_cofe = false, coffe_done = false, capsule = true;
 
 //Multi
 TaskHandle_t Cofe, Lamp, flag_survey;
-SemaphoreHandle_t lamp_flag, coffe_flag, volume_cofe_flag, capsule_flag;
+SemaphoreHandle_t lamp_flag, coffe_flag, volume_cofe_flag, capsule_flag, UdpUse;
 
 void setup(){
   // Initilize hardware serial:
@@ -55,6 +55,7 @@ void setup(){
   lamp_flag = xSemaphoreCreateMutex();
   coffe_flag= xSemaphoreCreateMutex();
   capsule_flag = xSemaphoreCreateMutex();
+  UdpUse = xSemaphoreCreateMutex();
 
   xTaskCreatePinnedToCore(
     GestionCafe,
@@ -80,7 +81,7 @@ void setup(){
 
   xTaskCreatePinnedToCore(
     SurveyflagtosendInfo,
-    "lampTask",
+    "Surveyflag",
     1000,
     NULL,
     1,
@@ -120,81 +121,96 @@ void GestionCafe(void * parameter)
   for(;;)
   {
     if(TrigerUltrason(ultrason_triger_back, ultrason_ear_back) < 1000)// see if there is enough water
+    {
       is_water = true;
+    }
     if (digitalRead(end_stop) && !has_capsule)
     {
       has_capsule = true;
+      Serial.println("Capsule changed");
     }
-    xSemaphoreTake(coffe_flag, portMAX_DELAY);
-    bool flag = Coffe_start;
-    long max_volume = value_of_coffe; // in %
-    if (max_volume == 0)
-      max_volume = 1000;// volume par defaut
-    //transformation % in duration.
-    if (flag)
-    {
-      if(has_capsule){
-        Coffe_start = false;
-        long volume = TrigerUltrason(ultrason_triger_front, ultrason_ear_front); 
-        if(volume < 1000)//see if there is a tasse
-        {
-          if(is_water)
+    if(xSemaphoreTake(coffe_flag, portMAX_DELAY)==pdTRUE){
+      bool flag = Coffe_start;
+      long max_volume = value_of_coffe; // in %
+      if (max_volume == 0)
+        max_volume = 300;// volume par defaut
+
+      //transformation % in duration.
+      if (flag)
+      {
+        if(has_capsule){
+          long volume = TrigerUltrason(ultrason_triger_front, ultrason_ear_front); 
+          Serial.print("Tasse ? ");
+          Serial.println(volume);
+          if(volume < 1000)//see if there is a tasse
           {
-            digitalWrite(Launch_coffe_btn, HIGH); // triger the button 
-            delay(1);
-            digitalWrite(Launch_coffe_btn, LOW);
-            delay(5000); 
-            long new_volume = TrigerUltrason(ultrason_triger_front, ultrason_ear_front);
-            if(new_volume == volume) //si le cafe n'a pas commence a couler c'est que la machine à besoin d'une selection de tasse
+            if(is_water)
             {
               digitalWrite(Launch_coffe_btn, HIGH); // triger the button 
               delay(1);
               digitalWrite(Launch_coffe_btn, LOW);
-            }
-            int count = 0;
-            while (new_volume < max_volume)
-            {
-              new_volume = TrigerUltrason(ultrason_triger_front, ultrason_ear_front);
-              if (volume == new_volume)// si ca ne coule plus
-                count++;
-              else
-                count = 0;
-              if (count >= 8) // on attend deux secondes pour etre sur et on relance la machine 
+              delay(1000); 
+              long new_volume = TrigerUltrason(ultrason_triger_front, ultrason_ear_front);
+              Serial.print("Volume value : ");
+              Serial.println(new_volume);
+              if(new_volume == volume) //si le cafe n'a pas commence a couler c'est que la machine à besoin d'une selection de tasse
               {
                 digitalWrite(Launch_coffe_btn, HIGH); // triger the button 
                 delay(1);
                 digitalWrite(Launch_coffe_btn, LOW);
               }
-              volume = new_volume;
-              xSemaphoreTake(volume_cofe_flag, portMAX_DELAY);
-              volume_of_cofe = true;
-              volume_of_coffe = new_volume*100/max_volume;
-              xSemaphoreGive(volume_cofe_flag);
-              delay(250);
+              int count = 0;
+              while (new_volume > max_volume)
+              {
+                new_volume = TrigerUltrason(ultrason_triger_front, ultrason_ear_front);
+                Serial.print("Volume value in bcle : ");
+                Serial.println(new_volume);
+                if (volume == new_volume)// si ca ne coule plus
+                  count++;
+                else
+                  count = 0;
+                if (count >= 4) // on attend deux secondes pour etre sur et on relance la machine 
+                {
+                  digitalWrite(Launch_coffe_btn, HIGH); // triger the button 
+                  delay(1);
+                  digitalWrite(Launch_coffe_btn, LOW);
+                }
+                volume = new_volume;
+                if(xSemaphoreTake(volume_cofe_flag, portMAX_DELAY)==pdTRUE){
+                  volume_of_cofe = true;
+                  volume_of_coffe = 100 -((new_volume-max_volume)*100/(1000-max_volume));
+                  Serial.print("Pourcentage value : ");
+                  Serial.println(volume_of_coffe);
+                  xSemaphoreGive(volume_cofe_flag);
+                }
+                delay(500);
+              }
+              new_volume = TrigerUltrason(ultrason_triger_front, ultrason_ear_front);
+              delay(100);
+              volume = TrigerUltrason(ultrason_triger_front, ultrason_ear_front);
+              if (volume > new_volume)// on verifie que ca c'est arreter de couler
+              {
+                digitalWrite(Launch_coffe_btn, HIGH); // triger the button 
+                delay(1);
+                digitalWrite(Launch_coffe_btn, LOW);
+              }
+              has_capsule = false;
+              Coffe_start = false;
+              coffe_done = true;
             }
-            new_volume = TrigerUltrason(ultrason_triger_front, ultrason_ear_front);
-            delay(100);
-            volume = TrigerUltrason(ultrason_triger_front, ultrason_ear_front);
-            if (volume > new_volume)// on verifie que ca c'est arreter de couler
-            {
-              digitalWrite(Launch_coffe_btn, HIGH); // triger the button 
-              delay(1);
-              digitalWrite(Launch_coffe_btn, LOW);
-            }
-            has_capsule = false;
-            coffe_done = true;
           }
         }
+        else
+        {
+          Serial.println("No capsule");
+          xSemaphoreTake(capsule_flag, portMAX_DELAY);
+          capsule = false;
+          xSemaphoreGive(capsule_flag);
+        }
       }
-      else
-      {
-        xSemaphoreTake(capsule_flag, portMAX_DELAY);
-        capsule = false;
-        xSemaphoreGive(capsule_flag);
-      }
+      xSemaphoreGive(coffe_flag);// tant que le cafe coule on accepte pas de changement dans les valeurs
     }
-    xSemaphoreGive(coffe_flag);// tant que le cafe coule on accepte pas de changement dans les valeurs
-    delay(200);
+    delay(10);
   }
 }
 
@@ -215,73 +231,85 @@ void GestionLampe(void * parameter)
 
   for(;;) 
   {    
-    xSemaphoreTake(lamp_flag, portMAX_DELAY);
-    bool flag = value_lamp_changed;
-    if(flag)
-    {
-      value_lamp_changed = false;
-      wait_time = prct_value_lamp;
-      Serial.print("Core : ");
-      Serial.print(xPortGetCoreID());
-      Serial.print("Gestion lampe : pourcentage for lamp : ");
-      Serial.println(wait_time);
-      wait_time = ((100-wait_time)*20)/100; //transforamtion % en millis
+    if(xSemaphoreTake(lamp_flag, (TickType_t) 1)== pdTRUE){
+      bool flag = value_lamp_changed;
+      if(flag)
+      {
+        value_lamp_changed = false;
+        wait_time = prct_value_lamp;
+        Serial.print("Core : ");
+        Serial.print(xPortGetCoreID());
+        Serial.print(" Gestion lampe : pourcentage for lamp : ");
+        Serial.println(wait_time);
+        wait_time = ((100-wait_time)*20)/100; //transforamtion % en millis
+      }
+      xSemaphoreGive(lamp_flag);
     }
-    xSemaphoreGive(lamp_flag);
 
     while(digitalRead(reseau)); // pour se synchroniser avec le reseau;
     delayMicroseconds(time_to_wait_to_zero);
     delay(wait_time);
     //start train d'impulsion (a changer lorsque datasheet etudiée)
     digitalWrite(triac, HIGH);
-    delayMicroseconds(500);
+    delayMicroseconds(100);
     digitalWrite(triac, LOW);
   }
 }
 
 void SurveyflagtosendInfo(void * parameter)
 {
-  WiFiUDP udp_sender = udp
-  ;
+  WiFiUDP udp_sender;
   for(;;)
   {
-    xSemaphoreTake(coffe_flag, portMAX_DELAY);
-    bool flag = coffe_done;
-    if(flag)
-    {
-      coffe_done = false;
-      udp_sender.beginPacket(udpAddress, 2225);
-      udp_sender.printf(COFFE_DONE);
-      udp_sender.endPacket();
+    if(xSemaphoreTake(coffe_flag, (TickType_t) 10)==pdTRUE){
+      if(coffe_done)
+      {
+        coffe_done = false;
+        if(xSemaphoreTake(UdpUse, portMAX_DELAY)==pdTRUE){
+            Serial.println("Message Coffe done sending");
+            udp_sender.beginPacket(udpAddress, 2225);
+            udp_sender.printf(COFFE_DONE);
+            udp_sender.endPacket();
+            xSemaphoreGive(UdpUse);
+          }
+      }
+      xSemaphoreGive(coffe_flag);
     }
-    xSemaphoreGive(coffe_flag);
     
-    xSemaphoreTake(volume_cofe_flag, portMAX_DELAY);
-    flag = volume_of_cofe;
-    if(flag)
-    {
-      volume_of_cofe = false;
-      uint8_t value = volume_of_coffe;
-      udp_sender.beginPacket(udpAddress, 2225);
-      udp_sender.printf(COFFE_VALUE);
-      if (value != 57)
-        udp.write(value);
-      udp_sender.endPacket();
+    if(xSemaphoreTake(volume_cofe_flag, (TickType_t) 10)==pdTRUE){
+      if(volume_of_cofe)
+      {
+        volume_of_cofe = false;
+        if(xSemaphoreTake(UdpUse, portMAX_DELAY)==pdTRUE){
+            Serial.println("Message coffe value sending");
+            uint8_t value = volume_of_coffe;
+            udp_sender.beginPacket(udpAddress, 2225);
+            udp_sender.printf(COFFE_VALUE);
+            if (value != 57)
+              udp_sender.write(value);
+            udp_sender.endPacket();
+            xSemaphoreGive(UdpUse);
+          }
+      }
+      xSemaphoreGive(volume_cofe_flag);
     }
-    xSemaphoreGive(volume_cofe_flag);
 
-    xSemaphoreTake(capsule_flag, portMAX_DELAY);
-    flag = !capsule;
-    if(flag)
-    {
-      capsule = true;
-      udp_sender.beginPacket(udpAddress,2225);
-      udp_sender.printf(HASNOCAPSULE);
-      udp.endPacket();
+    if(xSemaphoreTake(capsule_flag, (TickType_t) 10)==pdTRUE){
+      if(!capsule)
+      {
+        capsule = true;
+        if(xSemaphoreTake(UdpUse, portMAX_DELAY)==pdTRUE){
+          Serial.println("Message  No capsule sending");
+          udp_sender.beginPacket(udpAddress,2225);
+          udp_sender.printf(HASNOCAPSULE);
+          udp_sender.endPacket();
+          xSemaphoreGive(UdpUse);
+        }
+      }
+      xSemaphoreGive(capsule_flag);
     }
-    xSemaphoreGive(capsule_flag);
 
-    delay(300);
+    delay(10);
   }
 }
 #pragma endregion
@@ -289,54 +317,64 @@ void SurveyflagtosendInfo(void * parameter)
 void Decode_command(){
 
   char buff[32];
-  int val;
-  while(udp.parsePacket()==0);
+  int val, packet= 0 ;
 
-  val = udp.read(buff,32);
-  udp.flush();
-
-  if(memcmp(buff, START_COFFE, sizeof(START_COFFE)) == 0 && val == 5){
-    Serial.println("Demarrer la machine à café");
-    xSemaphoreTake(coffe_flag,portMAX_DELAY);
-    Coffe_start = true;
-    xSemaphoreGive(coffe_flag);
-  }
-  else if (memcmp(buff, VALUE_LAMP, sizeof(VALUE_LAMP))==0)
-  {
-    int newvalue = 0;
-    for(int i =sizeof(VALUE_LAMP) ; i<val; i++)
+  while(packet==0){
+    delay(10);
+    if(xSemaphoreTake(UdpUse, (TickType_t) 10 )== pdTRUE)
     {
-      newvalue+= pow(10, val-i-1) *(buff[i] - '0');
+        packet = udp.parsePacket();
+        if(packet==0)
+          xSemaphoreGive(UdpUse);
     }
-    Serial.print("La valeur de la lampe va changer et devenir : ");
-    Serial.println( newvalue);
-    xSemaphoreTake(lamp_flag, portMAX_DELAY);
-    prct_value_lamp = 100*newvalue/255;
-    value_lamp_changed = true;
-    xSemaphoreGive(lamp_flag);
+  }
+    val = udp.read(buff,32);
+    udp.flush();
+    for(int i = 0; i<val; i++)
+      Serial.print(buff[i]);
+    Serial.println();
 
-  }
-  else if(memcmp(buff, CHANGE_TASSE_VALUE, 16) == 0)
-  {    
-    int newvalue = 0;
-    for(int i =16 ; i<val; i++)
-    {
-      newvalue+= pow(10, val-i-1) *(buff[i] - '0');
+    if(memcmp(buff, START_COFFE, sizeof(START_COFFE)) == 0 && val == 5){
+      Serial.println("Demarrer la machine à café");
+      if(xSemaphoreTake(coffe_flag,portMAX_DELAY)==pdTRUE){
+        Coffe_start = true;
+        Serial.println("Is coffe realy start ?");
+        xSemaphoreGive(coffe_flag);
+      }
     }
-    Serial.print("La valeur de la tasse va changer et devenir : ");
-    Serial.println(newvalue);
-    xSemaphoreTake(coffe_flag, portMAX_DELAY);
-    value_of_coffe = newvalue;
-    xSemaphoreGive(coffe_flag);
-  }
-  else if(memcmp(buff, RSSI_LOW,7)==0)
-  {
-    //Va t'il partir ou rester ? telle est la question...
-    Identified = false;
-    waittime = 1000;
-    IdentificationAPP();
-  }
-  
+    else if (memcmp(buff, VALUE_LAMP, sizeof(VALUE_LAMP))==0)
+    {
+      int newvalue = 0;
+      newvalue+= (uint8_t) buff[4];
+      Serial.print("La valeur de la lampe va changer et devenir : ");
+      Serial.println( newvalue);
+      xSemaphoreTake(lamp_flag, portMAX_DELAY);
+      prct_value_lamp = newvalue;
+      value_lamp_changed = true;
+      xSemaphoreGive(lamp_flag);
+
+    }
+    else if(memcmp(buff, CHANGE_TASSE_VALUE, 16) == 0)
+    {    
+      int newvalue = 0;
+      for(int i =16 ; i<val; i++)
+      {
+        newvalue+= pow(10, val-i-1) *(buff[i] - '0');
+      }
+      Serial.print("La valeur de la tasse va changer et devenir : ");
+      Serial.println(newvalue);
+      xSemaphoreTake(coffe_flag, portMAX_DELAY);
+      value_of_coffe = newvalue;
+      xSemaphoreGive(coffe_flag);
+    }
+    else if(memcmp(buff, RSSI_LOW,7)==0)
+    {
+      //Va t'il partir ou rester ? telle est la question...
+      Identified = false;
+      waittime = 1000;
+      IdentificationAPP();
+    }
+  xSemaphoreGive(UdpUse);
 }
 
 long TrigerUltrason(int trigPin, int echoPin){
@@ -416,6 +454,7 @@ void WiFiEvent(WiFiEvent_t event){
       case SYSTEM_EVENT_STA_DISCONNECTED:
           Serial.println("WiFi lost connection");
           connected = false;
+          ESP.restart();
           break;
     }
 }
